@@ -1,0 +1,109 @@
+name: build-dylib
+
+# 在 GitHub 的 macOS runner 上用真正的 iOS SDK 编译 arm64 dylib。
+# 触发：push 到 main/master，或在 Actions 页面点 "Run workflow"。
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          set -e
+          xcodebuild -version || true
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "iPhoneOS SDK = $SDK"
+          echo "SDK version  = $(xcrun --sdk iphoneos --show-sdk-version)"
+          xcrun --sdk iphoneos clang --version
+
+      - name: Build XDProbe.dylib (minimal, load-verification only)
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=14.0 \
+            -isysroot "$SDK" \
+            -dynamiclib \
+            -fobjc-arc \
+            -O2 \
+            -Wall \
+            -framework Foundation \
+            -framework UIKit \
+            -install_name @executable_path/Frameworks/XDProbe.dylib \
+            -o XDProbe.dylib \
+            src/XDProbe.m
+          echo "--- built ---"
+          file XDProbe.dylib
+
+      - name: Build XDFastReward.dylib (full hook)
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=14.0 \
+            -isysroot "$SDK" \
+            -dynamiclib \
+            -fobjc-arc \
+            -O2 \
+            -Wall \
+            -framework Foundation \
+            -framework UIKit \
+            -install_name @executable_path/Frameworks/XDFastReward.dylib \
+            -o XDFastReward.dylib \
+            src/XiaoDuFastReward.m
+          echo "--- built ---"
+          file XDFastReward.dylib
+
+      - name: Verify Mach-O
+        run: |
+          set -e
+          for f in XDProbe.dylib XDFastReward.dylib; do
+            echo "===== $f ====="
+            lipo -info "$f"
+            otool -hv "$f" | head -5
+            echo "-- dependencies --"
+            otool -L "$f"
+            echo "-- install name --"
+            otool -D "$f"
+            echo "-- arch / minos --"
+            otool -l "$f" | grep -A4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS' | head -20
+            echo "-- size / sha256 --"
+            ls -l "$f"
+            shasum -a 256 "$f"
+          done
+
+      - name: Summary
+        run: |
+          {
+            echo "## 编译完成"
+            echo ""
+            echo "| 文件 | 大小 | SHA256 |"
+            echo "|---|---|---|"
+            for f in XDProbe.dylib XDFastReward.dylib; do
+              echo "| \`$f\` | $(stat -f%z "$f") B | \`$(shasum -a 256 "$f" | cut -c1-32)…\` |"
+            done
+            echo ""
+            echo "下载方式：本页底部 **Artifacts** → \`dylibs-arm64.zip\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dylibs-arm64
+          path: |
+            XDProbe.dylib
+            XDFastReward.dylib
+          if-no-files-found: error
+          retention-days: 30
